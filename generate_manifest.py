@@ -1,4 +1,4 @@
-﻿"""
+"""
 generate_manifest.py
 ====================
 Drop a PDF into this folder, run this script, and it will automatically
@@ -23,7 +23,10 @@ FRONT_KEYWORDS = ["PREFACE", "Preface"]
 BACK_KEYWORDS  = ["Final Reflections", "Summary Recap", "Glossary",
                   "Appendix", "Answer Key", "References"]
 
-# Lines to skip when extracting clean titles
+# Named sub-unit sections that appear as breadcrumb headers on content pages
+SUBUNIT_HEADERS = ["The Story Unfolds", "Pretest"]
+
+# Lines to skip when parsing
 SKIP_PATTERNS = [
     r"^(UNIT|Unit)\s+\d+$",
     r"^Chapter\s+\d+$",
@@ -37,26 +40,12 @@ SKIP_PATTERNS = [
     r"^Lesson\s+\d+\s*\|",
 ]
 
-# Named sub-unit sections that appear as breadcrumb headers on content pages
-SUBUNIT_HEADERS = ["The Story Unfolds", "Pretest"]
-
 
 def is_skip_line(line):
     for pat in SKIP_PATTERNS:
         if re.match(pat, line.strip(), re.IGNORECASE):
             return True
     return False
-
-
-def join_title_lines(lines):
-    parts = []
-    for l in lines:
-        if not l or is_skip_line(l):
-            break
-        if len(l) > 60:
-            break
-        parts.append(l)
-    return " ".join(parts).strip()
 
 
 def pick_pdf(folder):
@@ -96,13 +85,10 @@ def classify_page(lines, seen_subunits):
     for idx, l in enumerate(lines[:5]):
         m = re.match(r"^(UNIT|Unit)\s+(\d+)$", l.strip())
         if m:
-            unit_num = m.group(2)
-            before = [p for p in lines[:idx] if not is_skip_line(p)]
-            title = join_title_lines(before)
-            label = "Unit " + unit_num + (": " + title if title else "")
-            return "unit", label
+            # Short label: "Unit 1"
+            return "unit", "Unit " + m.group(2)
 
-    # Named sub-unit sections (e.g. "The Story Unfolds") — catch first occurrence only
+    # Named sub-unit sections (e.g. "The Story Unfolds") — first occurrence only
     for kw in SUBUNIT_HEADERS:
         if kw in combined and kw not in seen_subunits:
             seen_subunits.add(kw)
@@ -112,20 +98,14 @@ def classify_page(lines, seen_subunits):
     for idx, l in enumerate(lines[:5]):
         m = re.match(r"^Chapter\s+(\d+)$", l.strip())
         if m:
-            ch_num = m.group(1)
-            before = [p for p in lines[:idx] if not is_skip_line(p)]
-            title = join_title_lines(before)
-            label = "Chapter " + ch_num + (": " + title if title else "")
-            return "chapter", label
+            # Short label: "Chapter 1"
+            return "chapter", "Chapter " + m.group(1)
 
     # Lesson title page: "Lesson X" is first line
     if lines and re.match(r"^Lesson\s+(\d+)$", lines[0].strip()):
         m = re.match(r"^Lesson\s+(\d+)$", lines[0].strip())
-        les_num = m.group(1)
-        after = [p for p in lines[1:] if not is_skip_line(p) and len(p) > 3]
-        title = join_title_lines(after)
-        label = "Lesson " + les_num + (": " + title if title else "")
-        return "lesson", label
+        # Short label: "Lesson 1"
+        return "lesson", "Lesson " + m.group(1)
 
     return "content", ""
 
@@ -135,7 +115,7 @@ def extract_structure(pdf_path):
     total = len(doc)
     sections = []
     toc_start = None
-    seen_back    = set()
+    seen_back     = set()
     seen_subunits = set()
 
     for i in range(total):
@@ -173,6 +153,39 @@ def extract_structure(pdf_path):
     return sections, total
 
 
+def compute_end_pages(sections, total_pages):
+    """
+    Compute end pages hierarchically so chapter ranges span all their lessons.
+
+    Rules:
+      - unit    ends at: page before next unit (or end of doc)
+      - subunit ends at: page before next chapter or unit
+      - chapter ends at: page before next chapter or unit
+      - lesson  ends at: page before next lesson, chapter, or unit
+      - front/back end at: page before the next section of any type
+    """
+    # Which levels "close" a given level
+    CLOSES = {
+        "unit":    {"unit", "back"},
+        "subunit": {"chapter", "unit"},
+        "chapter": {"chapter", "unit"},
+        "lesson":  {"lesson", "chapter", "unit"},
+        "front":   {"unit", "chapter", "lesson", "front", "back"},
+        "back":    {"unit", "chapter", "lesson", "front", "back"},
+    }
+
+    for idx, sec in enumerate(sections):
+        closes = CLOSES.get(sec["level"], set())
+        end = total_pages  # default: end of document
+        for j in range(idx + 1, len(sections)):
+            if sections[j]["level"] in closes:
+                end = sections[j]["page"] - 1
+                break
+        sec["end"] = end
+
+    return sections
+
+
 def build_manifest(sections, total_pages, pdf_name, author):
     today = date.today().strftime("%B %d, %Y")
     title = os.path.splitext(pdf_name)[0]
@@ -188,15 +201,8 @@ def build_manifest(sections, total_pages, pdf_name, author):
         "",
     ]
 
-    # Compute end pages
-    for idx, sec in enumerate(sections):
-        nxt = sections[idx + 1]["page"] - 1 if idx + 1 < len(sections) else total_pages
-        sec["end"] = nxt
+    sections = compute_end_pages(sections, total_pages)
 
-    # Dash levels:
-    #   front / back / unit  -> -
-    #   subunit / chapter    -> --
-    #   lesson               -> ---
     level_map = {
         "front":   "-",
         "back":    "-",
@@ -246,6 +252,7 @@ def main():
 
     print("Scanning pages...")
     sections, total = extract_structure(pdf_path)
+    sections = compute_end_pages(sections, total)
     print("Found " + str(len(sections)) + " sections across " + str(total) + " pages.")
     print()
 
@@ -256,7 +263,7 @@ def main():
     for s in sections:
         ind = indent_map.get(s["level"], "")
         lvl = s["level"].upper().ljust(7)
-        print("  " + ind + "[" + lvl + "] p." + str(s["page"]).rjust(3) + "  " + s["label"])
+        print("  " + ind + "[" + lvl + "] p." + str(s["page"]).rjust(3) + " - " + str(s["end"]).rjust(3) + "  " + s["label"])
 
     print()
     manifest_text = build_manifest(sections, total, pdf_name, author)
