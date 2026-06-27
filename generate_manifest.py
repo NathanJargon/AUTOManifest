@@ -126,6 +126,11 @@ def extract_structure(pdf_path):
 
         level, label = classify_page(lines, seen_subunits)
 
+        # Page 1 with content that isn't already classified → Cover page
+        if i == 0 and level == "content" and lines:
+            level = "front"
+            label = "Cover"
+
         if level == "toc":
             if toc_start is None:
                 toc_start = i + 1
