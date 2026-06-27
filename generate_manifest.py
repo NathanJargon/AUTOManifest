@@ -12,7 +12,14 @@ Requirements:
     pip install pymupdf
 """
 
-import fitz
+try:
+    import fitz
+except ImportError:
+    import subprocess
+    print("pymupdf not found — installing it now...")
+    subprocess.check_call([__import__("sys").executable, "-m", "pip", "install", "pymupdf", "-q"])
+    import fitz
+    print("Done. Continuing...")
 import os
 import sys
 import re
