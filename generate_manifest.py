@@ -110,7 +110,33 @@ def classify_page(lines, seen_subunits):
     return "content", ""
 
 
-def extract_structure(pdf_path):
+def extract_cover_info(pdf_path):
+    """
+    Read page 1 (the cover) to extract grade level and count cover pages.
+    Returns (grade_level_str, cover_page_count).
+    """
+    doc = fitz.open(pdf_path)
+    cover_text = doc[0].get_text() if len(doc) > 0 else ""
+    doc.close()
+
+    grade = ""
+    # Look for patterns like "Grade 7", "grade 7", "Grade VII"
+    m = re.search(r"[Gg]rade\s+(\d+|[IVX]+)", cover_text)
+    if m:
+        grade = "Grade " + m.group(1)
+
+    # Determine how many pages are "cover" (pages before any real content).
+    # For now we assume exactly 1 cover page; adjust if books differ.
+    cover_count = 1
+    return grade, cover_count
+
+
+def extract_structure(pdf_path, page_offset=0):
+    """
+    Walk the PDF and collect section boundaries.
+    page_offset is subtracted from every raw PDF page number so that
+    page numbering in the manifest starts from 1 at the first real page.
+    """
     doc = fitz.open(pdf_path)
     total = len(doc)
     sections = []
@@ -119,6 +145,10 @@ def extract_structure(pdf_path):
     seen_subunits = set()
 
     for i in range(total):
+        # Skip cover pages entirely — they are not manifest entries
+        if i < page_offset:
+            continue
+
         text  = doc[i].get_text()
         lines = first_lines(text, 8)
         if not lines:
@@ -126,14 +156,9 @@ def extract_structure(pdf_path):
 
         level, label = classify_page(lines, seen_subunits)
 
-        # Page 1 with content that isn't already classified → Cover page
-        if i == 0 and level == "content" and lines:
-            level = "front"
-            label = "Cover"
-
         if level == "toc":
             if toc_start is None:
-                toc_start = i + 1
+                toc_start = (i + 1) - page_offset
             continue
 
         if level == "back":
@@ -142,7 +167,7 @@ def extract_structure(pdf_path):
             seen_back.add(label)
 
         if level in ("unit", "subunit", "chapter", "lesson", "front", "back"):
-            sections.append({"level": level, "label": label, "page": i + 1})
+            sections.append({"level": level, "label": label, "page": (i + 1) - page_offset})
 
     doc.close()
 
@@ -155,7 +180,8 @@ def extract_structure(pdf_path):
                 break
         sections.insert(insert_at, toc_entry)
 
-    return sections, total
+    # Total pages available after offset
+    return sections, total - page_offset
 
 
 def compute_end_pages(sections, total_pages):
@@ -191,14 +217,15 @@ def compute_end_pages(sections, total_pages):
     return sections
 
 
-def build_manifest(sections, total_pages, pdf_name, author):
+def build_manifest(sections, total_pages, pdf_name, author, grade_level=""):
     today = date.today().strftime("%B %d, %Y")
     title = os.path.splitext(pdf_name)[0]
+    grade_str = grade_level if grade_level else "[Grade -- fill in]"
 
     lines = [
         "# ============================================================",
         "# Manifest: " + title,
-        "# Grade Level: [Grade -- fill in]",
+        "# Grade Level: " + grade_str,
         "# School Year: SY 2026-2027",
         "# Authored by: " + author,
         "# Date: " + today,
@@ -256,9 +283,12 @@ def main():
     author = input("Your name (for the header): ").strip() or "[Your Name]"
 
     print("Scanning pages...")
-    sections, total = extract_structure(pdf_path)
+    grade_level, cover_count = extract_cover_info(pdf_path)
+    if grade_level:
+        print("Detected grade: " + grade_level)
+    sections, total = extract_structure(pdf_path, page_offset=cover_count)
     sections = compute_end_pages(sections, total)
-    print("Found " + str(len(sections)) + " sections across " + str(total) + " pages.")
+    print("Found " + str(len(sections)) + " sections across " + str(total) + " pages (cover excluded).")
     print()
 
     indent_map = {
@@ -271,7 +301,7 @@ def main():
         print("  " + ind + "[" + lvl + "] p." + str(s["page"]).rjust(3) + " - " + str(s["end"]).rjust(3) + "  " + s["label"])
 
     print()
-    manifest_text = build_manifest(sections, total, pdf_name, author)
+    manifest_text = build_manifest(sections, total, pdf_name, author, grade_level)
 
     out_name = suggested_filename(pdf_name)
     out_path = os.path.join(folder, out_name)
