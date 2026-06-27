@@ -1,0 +1,16 @@
+﻿# Ignore ebook PDFs (too large, not for version control)
+*.pdf
+
+# Ignore generated manifest files
+manifest_*.txt
+
+# Ignore template placeholder file
+manifest_SUBJECT-GRADE-UNIT.txt
+
+# Ignore OS/editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Internal QA guide — not for the repo
+MANIFEST-GUIDE.md
