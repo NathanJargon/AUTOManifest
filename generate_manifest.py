@@ -1,8 +1,9 @@
 """
 generate_manifest.py
 ====================
-Drop a PDF into this folder, run this script, and it will automatically
-generate a filled manifest .txt file ready for the inject_bookmarks.py script.
+Drop a PDF into the  books/  folder, run this script, and it will
+automatically generate a filled manifest .txt file in the  results/  folder
+ready for the inject_bookmarks.py script.
 
 Usage:
     python generate_manifest.py
@@ -55,27 +56,29 @@ def is_skip_line(line):
     return False
 
 
-def pick_pdf(folder):
-    pdfs = [f for f in os.listdir(folder) if f.lower().endswith(".pdf")]
+def pick_pdf(books_folder):
+    pdfs = [f for f in os.listdir(books_folder) if f.lower().endswith(".pdf")]
     if not pdfs:
-        print("No PDF files found in this folder.")
+        print("No PDF files found in books/ folder.")
+        print("  -> Drop a PDF into: " + books_folder)
         sys.exit(1)
     if len(pdfs) == 1:
         print("Found: " + pdfs[0])
-        return os.path.join(folder, pdfs[0])
-    print("Multiple PDFs found:")
+        return os.path.join(books_folder, pdfs[0])
+    print("Multiple PDFs found in books/:")
     for i, p in enumerate(pdfs, 1):
         print("  " + str(i) + ". " + p)
     choice = input("Enter number: ").strip()
-    return os.path.join(folder, pdfs[int(choice) - 1])
+    return os.path.join(books_folder, pdfs[int(choice) - 1])
 
 
 def first_lines(text, n=8):
     return [l.strip() for l in text.split("\n") if l.strip()][:n]
 
 
-def classify_page(lines, seen_subunits):
+def classify_page(lines, seen_subunits, full_text):
     combined = " ".join(lines)
+    combined_full = full_text.replace("\n", " ")
 
     if TOC_MARKER in combined:
         return "toc", ""
@@ -95,9 +98,9 @@ def classify_page(lines, seen_subunits):
             # Short label: "Unit 1"
             return "unit", "Unit " + m.group(2)
 
-    # Named sub-unit sections (e.g. "The Story Unfolds") — first occurrence only
+    # Named sub-unit sections (e.g. "The Story Unfolds") — first occurrence only in full text
     for kw in SUBUNIT_HEADERS:
-        if kw in combined and kw not in seen_subunits:
+        if kw in combined_full and kw not in seen_subunits:
             seen_subunits.add(kw)
             return "subunit", kw
 
@@ -161,7 +164,7 @@ def extract_structure(pdf_path, page_offset=0):
         if not lines:
             continue
 
-        level, label = classify_page(lines, seen_subunits)
+        level, label = classify_page(lines, seen_subunits, text)
 
         if level == "toc":
             if toc_start is None:
@@ -224,6 +227,68 @@ def compute_end_pages(sections, total_pages):
     return sections
 
 
+def filter_and_offset_sections(sections):
+    # Find the first unit
+    unit_idx = -1
+    for idx, sec in enumerate(sections):
+        if sec["level"] == "unit":
+            unit_idx = idx
+            break
+            
+    if unit_idx == -1:
+        return sections
+
+    # Get the start page of the unit
+    unit_start = sections[unit_idx]["page"]
+    offset = unit_start - 1
+
+    # Find the first chapter after the unit
+    first_chapter_idx = -1
+    for idx in range(unit_idx + 1, len(sections)):
+        if sections[idx]["level"] == "chapter":
+            first_chapter_idx = idx
+            break
+
+    # Get lessons under this chapter
+    lessons = []
+    if first_chapter_idx != -1:
+        for idx in range(first_chapter_idx + 1, len(sections)):
+            if sections[idx]["level"] in ("chapter", "unit", "back"):
+                break
+            if sections[idx]["level"] == "lesson":
+                lessons.append(sections[idx])
+
+    # Construct the kept list
+    kept = []
+    # 1. The unit itself (single page)
+    unit_sec = dict(sections[unit_idx])
+    unit_sec["end"] = unit_sec["page"]
+    kept.append(unit_sec)
+
+    # 2. Subunits between unit and chapter
+    limit = first_chapter_idx if first_chapter_idx != -1 else len(sections)
+    for idx in range(unit_idx + 1, limit):
+        if sections[idx]["level"] == "subunit":
+            kept.append(dict(sections[idx]))
+
+    # 3. The first chapter and its lessons
+    if first_chapter_idx != -1:
+        chapter_sec = dict(sections[first_chapter_idx])
+        if lessons:
+            # Set end page of chapter right before first lesson starts
+            chapter_sec["end"] = lessons[0]["page"] - 1
+        kept.append(chapter_sec)
+        for les in lessons:
+            kept.append(dict(les))
+
+    # Apply the offset to all kept sections
+    for sec in kept:
+        sec["page"] = sec["page"] - offset
+        sec["end"] = sec["end"] - offset
+
+    return kept
+
+
 def build_manifest(sections, total_pages, pdf_name, author, grade_level=""):
     today = date.today().strftime("%B %d, %Y")
     title = os.path.splitext(pdf_name)[0]
@@ -240,27 +305,27 @@ def build_manifest(sections, total_pages, pdf_name, author, grade_level=""):
         "",
     ]
 
-    sections = compute_end_pages(sections, total_pages)
 
+    # indent + single dash per level
     level_map = {
-        "front":   "-",
-        "back":    "-",
-        "unit":    "-",
-        "subunit": "--",
-        "chapter": "--",
-        "lesson":  "---",
+        "front":   "",
+        "back":    "",
+        "unit":    "",
+        "subunit": "  ",
+        "chapter": "  ",
+        "lesson":  "    ",
     }
 
     for sec in sections:
-        dash  = level_map.get(sec["level"], "-")
-        start = sec["page"]
-        stop  = sec["end"]
-        label = sec["label"]
+        indent = level_map.get(sec["level"], "")
+        start  = sec["page"]
+        stop   = sec["end"]
+        label  = sec["label"]
         if start == stop:
             page_str = "(page " + str(start) + ")"
         else:
             page_str = "(page " + str(start) + " - " + str(stop) + ")"
-        lines.append(dash + " " + label + " " + page_str)
+        lines.append(indent + "- " + label + " " + page_str)
 
     lines.append("")
     return "\n".join(lines)
@@ -274,28 +339,21 @@ def suggested_filename(pdf_name):
     return "manifest_" + slug + ".txt"
 
 
-def main():
-    folder = os.path.dirname(os.path.abspath(__file__))
-
-    if len(sys.argv) > 1:
-        pdf_path = sys.argv[1]
-        if not os.path.isabs(pdf_path):
-            pdf_path = os.path.join(folder, pdf_path)
-    else:
-        pdf_path = pick_pdf(folder)
-
+def process_pdf(pdf_path, results_folder, author):
+    """Process a single PDF and write its manifest to results_folder."""
     pdf_name = os.path.basename(pdf_path)
+    print("=" * 60)
     print("Reading: " + pdf_name)
 
-    author = input("Your name (for the header): ").strip() or "[Your Name]"
-
-    print("Scanning pages...")
     grade_level, cover_count = extract_cover_info(pdf_path)
     if grade_level:
         print("Detected grade: " + grade_level)
+
+    print("Scanning pages...")
     sections, total = extract_structure(pdf_path, page_offset=cover_count)
     sections = compute_end_pages(sections, total)
-    print("Found " + str(len(sections)) + " sections across " + str(total) + " pages (cover excluded).")
+    sections = filter_and_offset_sections(sections)
+    print("Found " + str(len(sections)) + " sections (filtered/offset).")
     print()
 
     indent_map = {
@@ -311,20 +369,55 @@ def main():
     manifest_text = build_manifest(sections, total, pdf_name, author, grade_level)
 
     out_name = suggested_filename(pdf_name)
-    out_path = os.path.join(folder, out_name)
-
-    if os.path.exists(out_path):
-        ow = input("  " + out_name + " already exists. Overwrite? (y/n): ").strip().lower()
-        if ow != "y":
-            out_name = input("Enter a new filename (.txt): ").strip()
-            out_path = os.path.join(folder, out_name)
+    out_path = os.path.join(results_folder, out_name)
 
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(manifest_text)
 
-    print()
     print("Saved: " + out_path)
-    print("Done! Review the file and fill in any [placeholders] before handing off to QA lead.")
+
+
+def main():
+    script_dir     = os.path.dirname(os.path.abspath(__file__))
+    books_folder   = os.path.join(script_dir, "books")
+    results_folder = os.path.join(script_dir, "results")
+
+    # Create folders if they don't exist yet
+    os.makedirs(books_folder,  exist_ok=True)
+    os.makedirs(results_folder, exist_ok=True)
+
+    # Collect PDFs — either a specific file passed as argument, or all in books/
+    if len(sys.argv) > 1:
+        pdf_path = sys.argv[1]
+        if not os.path.isabs(pdf_path):
+            candidate = os.path.join(books_folder, pdf_path)
+            pdf_path  = candidate if os.path.exists(candidate) else os.path.join(script_dir, pdf_path)
+        pdf_list = [pdf_path]
+    else:
+        pdf_list = sorted(
+            os.path.join(books_folder, f)
+            for f in os.listdir(books_folder)
+            if f.lower().endswith(".pdf")
+        )
+        if not pdf_list:
+            print("No PDF files found in books/ folder.")
+            print("  -> Drop PDFs into: " + books_folder)
+            sys.exit(1)
+        print("Found " + str(len(pdf_list)) + " PDF(s) in books/:")
+        for p in pdf_list:
+            print("  - " + os.path.basename(p))
+        print()
+
+    author = input("Your name (for all manifest headers): ").strip() or "[Your Name]"
+    print()
+
+    for pdf_path in pdf_list:
+        process_pdf(pdf_path, results_folder, author)
+        print()
+
+    print("=" * 60)
+    print("All done! " + str(len(pdf_list)) + " manifest(s) saved to: " + results_folder)
+    print("Review each file and fill in any [placeholders] before handing off to QA lead.")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-﻿# Ignore ebook PDFs (too large, not for version control)
+# Ignore ebook PDFs (too large, not for version control)
 *.pdf
 
 # Ignore generated manifest files
@@ -14,3 +14,7 @@ desktop.ini
 
 # Internal QA guide — not for the repo
 MANIFEST-GUIDE.md
+
+# Python cache and scratch files
+__pycache__/
+scratch/
