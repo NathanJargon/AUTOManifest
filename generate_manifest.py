@@ -79,8 +79,10 @@ def first_lines(text, n=8):
 def classify_page(lines, seen_subunits, full_text):
     combined = " ".join(lines)
     combined_full = full_text.replace("\n", " ")
+    combined_full_lower = combined_full.lower()
+    combined_lower = combined.lower()
 
-    if TOC_MARKER in combined:
+    if TOC_MARKER.lower() in combined_full_lower:
         return "toc", ""
 
     for kw in FRONT_KEYWORDS:
@@ -88,34 +90,45 @@ def classify_page(lines, seen_subunits, full_text):
             return "front", kw.title()
 
     for kw in BACK_KEYWORDS:
-        if any(kw.lower() in l.lower() for l in lines[:3]):
-            return "back", kw
+        for l in lines[:3]:
+            # Match back sections exactly (case insensitive, strip trailing colons/spaces)
+            cleaned = l.strip().strip(':').strip().lower()
+            if cleaned == kw.lower():
+                return "back", kw
 
-    # Unit cover page: "UNIT X" or "Unit X" alone on a line
-    for idx, l in enumerate(lines[:5]):
-        m = re.match(r"^(UNIT|Unit)\s+(\d+)$", l.strip())
-        if m:
-            # Short label: "Unit 1"
-            return "unit", "Unit " + m.group(2)
+    is_running_header_page = bool(
+        re.search(r"science\s+\d+", combined_full_lower) or 
+        re.search(r"english\s+\d+", combined_full_lower) or 
+        re.search(r"ignite\s+curiosity", combined_full_lower)
+    )
 
-    # Named sub-unit sections (e.g. "The Story Unfolds") — first occurrence only in full text
-    for kw in SUBUNIT_HEADERS:
-        if kw in combined_full and kw not in seen_subunits:
-            seen_subunits.add(kw)
-            return "subunit", kw
+    if not is_running_header_page:
+        # Unit cover page: "UNIT X" or "Unit X" alone or with colon
+        for idx, l in enumerate(lines[:8]):
+            m = re.match(r"^(UNIT|Unit)\s+(\d+)[:\s]*$", l.strip())
+            if m:
+                # Short label: "Unit 1"
+                return "unit", "Unit " + m.group(2)
 
-    # Chapter cover page: "Chapter X" alone on a line
-    for idx, l in enumerate(lines[:5]):
-        m = re.match(r"^Chapter\s+(\d+)$", l.strip())
-        if m:
-            # Short label: "Chapter 1"
-            return "chapter", "Chapter " + m.group(1)
+        # Named sub-unit sections (e.g. "The Story Unfolds") — first occurrence only in the first 15 lines
+        for kw in SUBUNIT_HEADERS:
+            if kw.lower() in combined_lower and kw not in seen_subunits:
+                seen_subunits.add(kw)
+                return "subunit", kw
 
-    # Lesson title page: "Lesson X" is first line
-    if lines and re.match(r"^Lesson\s+(\d+)$", lines[0].strip()):
-        m = re.match(r"^Lesson\s+(\d+)$", lines[0].strip())
-        # Short label: "Lesson 1"
-        return "lesson", "Lesson " + m.group(1)
+        # Chapter cover page: "Chapter X" alone or with colon
+        for idx, l in enumerate(lines[:10]):
+            m = re.match(r"^(Chapter|CHAPTER)\s+(\d+)[:\s]*$", l.strip())
+            if m:
+                # Short label: "Chapter 1"
+                return "chapter", "Chapter " + m.group(2)
+
+        # Lesson title page: "Lesson X" alone or with colon
+        for idx, l in enumerate(lines[:10]):
+            m = re.match(r"^(Lesson|LESSON)\s+(\d+)[:\s]*$", l.strip())
+            if m:
+                # Short label: "Lesson 1"
+                return "lesson", "Lesson " + m.group(2)
 
     return "content", ""
 
@@ -135,9 +148,10 @@ def extract_cover_info(pdf_path):
     if m:
         grade = "Grade " + m.group(1)
 
-    # Determine how many pages are "cover" (pages before any real content).
-    # For now we assume exactly 1 cover page; adjust if books differ.
-    cover_count = 1
+    cover_count = 0
+    cover_text_lower = cover_text.lower()
+    if "template" in cover_text_lower or "title here" in cover_text_lower or "childrens" in cover_text_lower:
+        cover_count = 1
     return grade, cover_count
 
 
@@ -153,6 +167,8 @@ def extract_structure(pdf_path, page_offset=0):
     toc_start = None
     seen_back     = set()
     seen_subunits = set()
+    seen_chapters = set()
+    seen_lessons  = set()
 
     for i in range(total):
         # Skip cover pages entirely — they are not manifest entries
@@ -160,7 +176,7 @@ def extract_structure(pdf_path, page_offset=0):
             continue
 
         text  = doc[i].get_text()
-        lines = first_lines(text, 8)
+        lines = first_lines(text, 15)
         if not lines:
             continue
 
@@ -175,6 +191,17 @@ def extract_structure(pdf_path, page_offset=0):
             if label in seen_back:
                 continue
             seen_back.add(label)
+
+        if level == "chapter":
+            if label in seen_chapters:
+                continue
+            seen_chapters.add(label)
+            seen_lessons = set()  # Reset lessons for the new chapter
+
+        if level == "lesson":
+            if label in seen_lessons:
+                continue
+            seen_lessons.add(label)
 
         if level in ("unit", "subunit", "chapter", "lesson", "front", "back"):
             sections.append({"level": level, "label": label, "page": (i + 1) - page_offset})
@@ -275,18 +302,18 @@ def build_manifest(sections, total_pages, pdf_name, author, grade_level=""):
     ]
 
 
-    # indent + single dash per level
+    # dashes mapping per level
     level_map = {
-        "front":   "",
-        "back":    "",
-        "unit":    "",
-        "subunit": "  ",
-        "chapter": "  ",
-        "lesson":  "    ",
+        "front":   "-",
+        "back":    "-",
+        "unit":    "-",
+        "subunit": "--",
+        "chapter": "--",
+        "lesson":  "---",
     }
 
     for sec in sections:
-        indent = level_map.get(sec["level"], "")
+        dash   = level_map.get(sec["level"], "-")
         start  = sec["page"]
         stop   = sec["end"]
         label  = sec["label"]
@@ -294,7 +321,7 @@ def build_manifest(sections, total_pages, pdf_name, author, grade_level=""):
             page_str = "(page " + str(start) + ")"
         else:
             page_str = "(page " + str(start) + " - " + str(stop) + ")"
-        lines.append(indent + "- " + label + " " + page_str)
+        lines.append(dash + " " + label + " " + page_str)
 
     lines.append("")
     return "\n".join(lines)
