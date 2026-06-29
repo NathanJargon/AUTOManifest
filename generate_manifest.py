@@ -242,44 +242,13 @@ def filter_and_offset_sections(sections):
     unit_start = sections[unit_idx]["page"]
     offset = unit_start - 1
 
-    # Find the first chapter after the unit
-    first_chapter_idx = -1
-    for idx in range(unit_idx + 1, len(sections)):
-        if sections[idx]["level"] == "chapter":
-            first_chapter_idx = idx
-            break
-
-    # Get lessons under this chapter
-    lessons = []
-    if first_chapter_idx != -1:
-        for idx in range(first_chapter_idx + 1, len(sections)):
-            if sections[idx]["level"] in ("chapter", "unit", "back"):
-                break
-            if sections[idx]["level"] == "lesson":
-                lessons.append(sections[idx])
-
-    # Construct the kept list
     kept = []
-    # 1. The unit itself (single page)
-    unit_sec = dict(sections[unit_idx])
-    unit_sec["end"] = unit_sec["page"]
-    kept.append(unit_sec)
-
-    # 2. Subunits between unit and chapter
-    limit = first_chapter_idx if first_chapter_idx != -1 else len(sections)
-    for idx in range(unit_idx + 1, limit):
-        if sections[idx]["level"] == "subunit":
-            kept.append(dict(sections[idx]))
-
-    # 3. The first chapter and its lessons
-    if first_chapter_idx != -1:
-        chapter_sec = dict(sections[first_chapter_idx])
-        if lessons:
-            # Set end page of chapter right before first lesson starts
-            chapter_sec["end"] = lessons[0]["page"] - 1
-        kept.append(chapter_sec)
-        for les in lessons:
-            kept.append(dict(les))
+    for idx in range(unit_idx, len(sections)):
+        sec = dict(sections[idx])
+        if sec["level"] == "unit":
+            sec["end"] = sec["page"]
+        if sec["level"] in ("unit", "subunit", "chapter", "lesson", "back"):
+            kept.append(sec)
 
     # Apply the offset to all kept sections
     for sec in kept:
