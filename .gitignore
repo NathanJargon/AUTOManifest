@@ -1,8 +1,8 @@
 # Ignore ebook PDFs (too large, not for version control)
 *.pdf
 
-# Ignore generated manifest files
-manifest_*.txt
+# Ignore generated manifest files in root only
+/manifest_*.txt
 
 # Ignore template placeholder file
 manifest_SUBJECT-GRADE-UNIT.txt
